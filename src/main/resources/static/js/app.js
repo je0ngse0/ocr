@@ -369,6 +369,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (res.ok) {
+                const created = await res.json();
+                const deleteTokens = JSON.parse(localStorage.getItem('post_delete_tokens') || '{}');
+                deleteTokens[created.post.id] = created.deleteToken;
+                localStorage.setItem('post_delete_tokens', JSON.stringify(deleteTokens));
                 closePostModal();
                 fetchPosts();
             } else {
@@ -388,9 +392,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deletePost = async function(id) {
         if (!confirm('이 게시글을 삭제하시겠습니까?')) return;
+        const deleteTokens = JSON.parse(localStorage.getItem('post_delete_tokens') || '{}');
+        const deleteToken = deleteTokens[id];
+        if (!deleteToken) {
+            alert('이 브라우저에는 해당 게시글의 삭제 권한이 없습니다.');
+            return;
+        }
         try {
-            const res = await fetch(`/api/posts/${id}`, { method: 'DELETE' });
-            if (res.ok) fetchPosts();
+            const res = await fetch(`/api/posts/${id}`, {
+                method: 'DELETE',
+                headers: { 'X-Delete-Token': deleteToken }
+            });
+            if (res.ok) {
+                delete deleteTokens[id];
+                localStorage.setItem('post_delete_tokens', JSON.stringify(deleteTokens));
+                fetchPosts();
+            } else if (res.status === 403) {
+                alert('삭제 토큰이 올바르지 않습니다.');
+            }
         } catch (e) {}
     };
 

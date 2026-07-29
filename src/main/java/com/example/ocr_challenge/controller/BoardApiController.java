@@ -1,8 +1,10 @@
 package com.example.ocr_challenge.controller;
 
 import com.example.ocr_challenge.dto.PostDto;
+import com.example.ocr_challenge.dto.PostCreateResponse;
 import com.example.ocr_challenge.service.BoardService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,17 +24,22 @@ public class BoardApiController {
     }
 
     @PostMapping
-    public ResponseEntity<PostDto> createPost(@RequestBody PostDto request) {
-        if (request.getTitle() == null || request.getTitle().isBlank()) {
+    public ResponseEntity<PostCreateResponse> createPost(@RequestBody PostDto request) {
+        if (request.getTitle() == null
+                || request.getTitle().isBlank()
+                || request.getTitle().length() > 200
+                || request.getContent() == null
+                || request.getContent().isBlank()
+                || (request.getAuthor() != null && request.getAuthor().length() > 50)) {
             return ResponseEntity.badRequest().build();
         }
-        PostDto created = boardService.createPost(
+        BoardService.PostCreationResult created = boardService.createPost(
                 request.getTitle(),
                 request.getContent(),
                 request.getAuthor(),
                 request.getAttachedOcrText()
         );
-        return ResponseEntity.ok(created);
+        return ResponseEntity.ok(new PostCreateResponse(created.post(), created.deleteToken()));
     }
 
     @PostMapping("/{id}/like")
@@ -45,11 +52,14 @@ public class BoardApiController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deletePost(@PathVariable Long id) {
-        boolean success = boardService.deletePost(id);
-        if (success) {
-            return ResponseEntity.ok().build();
-        }
-        return ResponseEntity.notFound().build();
+    public ResponseEntity<Void> deletePost(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-Delete-Token", required = false) String deleteToken
+    ) {
+        return switch (boardService.deletePost(id, deleteToken)) {
+            case DELETED -> ResponseEntity.ok().build();
+            case NOT_FOUND -> ResponseEntity.notFound().build();
+            case FORBIDDEN -> ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        };
     }
 }

@@ -1,67 +1,92 @@
 package com.example.ocr_challenge.service;
 
 import com.example.ocr_challenge.dto.PostDto;
+import com.example.ocr_challenge.repository.BoardRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 
 @Service
+@RequiredArgsConstructor
 public class BoardService {
 
-    private final List<PostDto> posts = new ArrayList<>();
-    private long idSequence = 1L;
+    private final BoardRepository boardRepository;
+    private final SecureRandom secureRandom = new SecureRandom();
 
-    public BoardService() {
-        // Initial sample posts
-        createPost("환영합니다! OCR 스튜디오 커뮤니티입니다.", 
-            "이미지에서 텍스트를 추출하고 결과를 자유롭게 공유해보세요!", 
-            "익명관리자", 
-            "샘플 OCR 인식 결과입니다.");
-            
-        createPost("손글씨 인식 팁 알고 계신가요?", 
-            "선명한 고해상도 이미지를 올리고 대비를 명확히 하면 텍스트 인식률이 훨씬 좋아집니다.", 
-            "익명사용자", 
-            null);
+    public List<PostDto> getAllPosts() {
+        return boardRepository.findAll();
     }
 
-    public synchronized List<PostDto> getAllPosts() {
-        return new ArrayList<>(posts);
-    }
-
-    public synchronized PostDto createPost(String title, String content, String author, String attachedOcrText) {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+    public PostCreationResult createPost(
+            String title,
+            String content,
+            String author,
+            String attachedOcrText
+    ) {
+        LocalDateTime now = LocalDateTime.now();
         String authorName = (author != null && !author.isBlank()) ? author : "익명";
+        String deleteToken = generateDeleteToken();
 
-        PostDto post = PostDto.builder()
-                .id(idSequence++)
-                .title(title)
-                .content(content)
-                .author(authorName)
-                .createdAt(now)
-                .likeCount(0)
-                .attachedOcrText(attachedOcrText)
-                .build();
-
-        // Newest posts first
-        posts.add(0, post);
-        return post;
+        PostDto post = boardRepository.create(
+                title,
+                content,
+                authorName,
+                attachedOcrText,
+                hashDeleteToken(deleteToken),
+                now
+        );
+        return new PostCreationResult(post, deleteToken);
     }
 
-    public synchronized boolean likePost(Long id) {
-        for (PostDto post : posts) {
-            if (post.getId().equals(id)) {
-                int currentLikes = (post.getLikeCount() != null) ? post.getLikeCount() : 0;
-                post.setLikeCount(currentLikes + 1);
-                return true;
-            }
+    public boolean likePost(Long id) {
+        return boardRepository.incrementLikeCount(id);
+    }
+
+    public DeleteResult deletePost(Long id, String deleteToken) {
+        String storedHash = boardRepository.findDeleteTokenHash(id).orElse(null);
+        if (storedHash == null) {
+            return DeleteResult.NOT_FOUND;
         }
-        return false;
+        if (deleteToken == null || deleteToken.isBlank()
+                || !MessageDigest.isEqual(
+                        storedHash.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                        hashDeleteToken(deleteToken).getBytes(java.nio.charset.StandardCharsets.US_ASCII)
+                )) {
+            return DeleteResult.FORBIDDEN;
+        }
+
+        return boardRepository.deleteById(id) ? DeleteResult.DELETED : DeleteResult.NOT_FOUND;
     }
 
-    public synchronized boolean deletePost(Long id) {
-        return posts.removeIf(post -> post.getId().equals(id));
+    private String generateDeleteToken() {
+        byte[] tokenBytes = new byte[32];
+        secureRandom.nextBytes(tokenBytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(tokenBytes);
+    }
+
+    private String hashDeleteToken(String deleteToken) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(deleteToken.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    public record PostCreationResult(PostDto post, String deleteToken) {
+    }
+
+    public enum DeleteResult {
+        DELETED,
+        NOT_FOUND,
+        FORBIDDEN
     }
 }
