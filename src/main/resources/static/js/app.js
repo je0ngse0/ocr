@@ -1,536 +1,371 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // --- Navigation & View Switching ---
-    const navBtns = document.querySelectorAll('.nav-btn');
-    const viewSections = document.querySelectorAll('.view-section');
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    const HISTORY_KEY = 'ocr_history';
+    const HISTORY_LIMIT = 20;
 
-    window.switchView = function(viewId) {
-        navBtns.forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.view === viewId);
-        });
-        viewSections.forEach(sec => {
-            sec.classList.toggle('active', sec.id === viewId);
-        });
-        if (viewId === 'boardView') {
-            fetchPosts();
-        } else if (viewId === 'searchView') {
-            renderHistory();
-        }
+    const elements = {
+        dropzone: document.getElementById('dropzone'),
+        fileInput: document.getElementById('fileInput'),
+        prompt: document.getElementById('dropzonePrompt'),
+        previewContainer: document.getElementById('previewContainer'),
+        preview: document.getElementById('imagePreview'),
+        removeImage: document.getElementById('removeImageBtn'),
+        extract: document.getElementById('extractBtn'),
+        spinner: document.getElementById('btnSpinner'),
+        buttonText: document.querySelector('#extractBtn .btn-text'),
+        langChips: document.querySelectorAll('.lang-chip'),
+        statusDot: document.querySelector('.status-dot'),
+        statusText: document.getElementById('engineStatusText'),
+        metricTime: document.getElementById('metricTime'),
+        metricWords: document.getElementById('metricWords'),
+        metricLines: document.getElementById('metricLines'),
+        metricSize: document.getElementById('metricSize'),
+        resultFileName: document.getElementById('resultFileName'),
+        emptyState: document.getElementById('emptyState'),
+        result: document.getElementById('resultTextarea'),
+        tts: document.getElementById('ttsBtn'),
+        copy: document.getElementById('copyBtn'),
+        download: document.getElementById('downloadBtn'),
+        infoBox: document.getElementById('infoBox'),
+        infoContent: document.getElementById('infoContent'),
+        historySearch: document.getElementById('historySearch'),
+        clearHistory: document.getElementById('clearHistoryBtn'),
+        historyGrid: document.getElementById('historyGrid')
     };
-
-    navBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            switchView(btn.dataset.view);
-        });
-    });
-
-    document.getElementById('logoHomeBtn')?.addEventListener('click', () => switchView('homeView'));
-
-    // --- OCR Elements ---
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('fileInput');
-    const dropzonePrompt = document.getElementById('dropzonePrompt');
-    const previewContainer = document.getElementById('previewContainer');
-    const imagePreview = document.getElementById('imagePreview');
-    const removeImageBtn = document.getElementById('removeImageBtn');
-    
-    const extractBtn = document.getElementById('extractBtn');
-    const btnSpinner = document.getElementById('btnSpinner');
-    const btnText = extractBtn.querySelector('.btn-text');
-
-    const langChips = document.querySelectorAll('.lang-chip');
-    const statusDot = document.querySelector('.status-dot');
-    const engineStatusText = document.getElementById('engineStatusText');
-
-    const metricTime = document.getElementById('metricTime');
-    const metricWords = document.getElementById('metricWords');
-    const metricLines = document.getElementById('metricLines');
-    const metricSize = document.getElementById('metricSize');
-
-    const resultFileName = document.getElementById('resultFileName');
-    const emptyState = document.getElementById('emptyState');
-    const resultTextarea = document.getElementById('resultTextarea');
-
-    const ttsBtn = document.getElementById('ttsBtn');
-    const shareBoardBtn = document.getElementById('shareBoardBtn');
-    const copyBtn = document.getElementById('copyBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
-
-    const infoBox = document.getElementById('infoBox');
-    const infoContent = document.getElementById('infoContent');
 
     let currentFile = null;
     let selectedLanguage = 'kor+eng';
 
-    // Fetch Engine Status
-    fetchEngineStatus();
+    checkEngineStatus();
+    renderHistory();
 
-    async function fetchEngineStatus() {
+    async function checkEngineStatus() {
         try {
-            const res = await fetch('/api/ocr/status');
-            const status = await res.json();
-            if (status.available) {
-                statusDot.classList.add('active');
-                statusDot.classList.remove('pulse');
-            } else {
-                engineStatusText.textContent = 'Engine Warning';
-                showInfoNotice(status.message);
-            }
-        } catch (e) {
-            engineStatusText.textContent = 'Server Status Offline';
+            const response = await fetch('/api/ocr/status');
+            if (!response.ok) throw new Error();
+            const status = await response.json();
+            elements.statusText.textContent = status.available ? 'OCR 엔진 준비됨' : 'OCR 엔진 확인 필요';
+            elements.statusDot.classList.toggle('active', status.available);
+            elements.statusDot.classList.remove('pulse');
+            if (!status.available) showNotice(status.message, true);
+        } catch {
+            elements.statusText.textContent = '서버 연결 안 됨';
+            elements.statusDot.classList.remove('pulse');
+            showNotice('OCR 서버 상태를 확인할 수 없습니다.', true);
         }
     }
 
-    // Drag and Drop Handling
     ['dragenter', 'dragover'].forEach(eventName => {
-        dropzone.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            dropzone.classList.add('dragover');
+        elements.dropzone.addEventListener(eventName, event => {
+            event.preventDefault();
+            elements.dropzone.classList.add('dragover');
         });
     });
 
     ['dragleave', 'drop'].forEach(eventName => {
-        dropzone.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            dropzone.classList.remove('dragover');
+        elements.dropzone.addEventListener(eventName, event => {
+            event.preventDefault();
+            elements.dropzone.classList.remove('dragover');
         });
     });
 
-    dropzone.addEventListener('drop', (e) => {
-        const files = e.dataTransfer.files;
-        if (files.length > 0) handleFileSelect(files[0]);
+    elements.dropzone.addEventListener('drop', event => {
+        const [file] = event.dataTransfer.files;
+        if (file) selectFile(file);
     });
 
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) handleFileSelect(e.target.files[0]);
+    elements.fileInput.addEventListener('change', event => {
+        const [file] = event.target.files;
+        if (file) selectFile(file);
     });
 
-    function handleFileSelect(file) {
+    function selectFile(file) {
         if (!file.type.startsWith('image/')) {
-            alert('이미지 파일만 업로드 가능합니다.');
+            showNotice('이미지 파일만 업로드할 수 있습니다.', true);
+            return;
+        }
+        if (file.size > MAX_FILE_SIZE) {
+            showNotice('파일 크기는 10MB를 넘을 수 없습니다.', true);
             return;
         }
 
         currentFile = file;
         const reader = new FileReader();
-        reader.onload = (e) => {
-            imagePreview.src = e.target.result;
-            dropzonePrompt.classList.add('hidden');
-            previewContainer.classList.remove('hidden');
-            extractBtn.disabled = false;
-        };
+        reader.addEventListener('load', event => {
+            elements.preview.src = event.target.result;
+            elements.prompt.classList.add('hidden');
+            elements.previewContainer.classList.remove('hidden');
+            elements.extract.disabled = false;
+        });
         reader.readAsDataURL(file);
-
-        metricSize.textContent = formatBytes(file.size);
-        resultFileName.textContent = file.name;
+        elements.metricSize.textContent = formatBytes(file.size);
+        elements.resultFileName.textContent = file.name;
+        hideNotice();
     }
 
-    removeImageBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        resetImageSelection();
+    elements.removeImage.addEventListener('click', event => {
+        event.stopPropagation();
+        resetWorkspace();
     });
 
-    function resetImageSelection() {
+    function resetWorkspace() {
         currentFile = null;
-        fileInput.value = '';
-        imagePreview.src = '';
-        dropzonePrompt.classList.remove('hidden');
-        previewContainer.classList.add('hidden');
-        extractBtn.disabled = true;
-        
-        resultFileName.textContent = '텍스트 인식 대기 중...';
-        metricSize.textContent = '-';
-        metricTime.textContent = '-';
-        metricWords.textContent = '-';
-        metricLines.textContent = '-';
-
-        emptyState.classList.remove('hidden');
-        resultTextarea.classList.add('hidden');
-        resultTextarea.value = '';
-        
-        ttsBtn.disabled = true;
-        shareBoardBtn.disabled = true;
-        copyBtn.disabled = true;
-        downloadBtn.disabled = true;
+        elements.fileInput.value = '';
+        elements.preview.removeAttribute('src');
+        elements.prompt.classList.remove('hidden');
+        elements.previewContainer.classList.add('hidden');
+        elements.extract.disabled = true;
+        elements.resultFileName.textContent = '텍스트 인식 대기 중';
+        elements.result.value = '';
+        elements.result.classList.add('hidden');
+        elements.emptyState.classList.remove('hidden');
+        setResultActions(false);
+        updateMetrics();
+        window.speechSynthesis?.cancel();
+        hideNotice();
     }
 
-    langChips.forEach(chip => {
+    elements.langChips.forEach(chip => {
         chip.addEventListener('click', () => {
-            langChips.forEach(c => c.classList.remove('active'));
+            elements.langChips.forEach(item => item.classList.remove('active'));
             chip.classList.add('active');
             selectedLanguage = chip.dataset.lang;
         });
     });
 
-    // Extract Text API
-    extractBtn.addEventListener('click', async () => {
+    elements.extract.addEventListener('click', async () => {
         if (!currentFile) return;
         setLoading(true);
 
-        const formData = new FormData();
-        formData.append('file', currentFile);
-        formData.append('lang', selectedLanguage);
+        const body = new FormData();
+        body.append('file', currentFile);
+        body.append('lang', selectedLanguage);
 
         try {
-            const response = await fetch('/api/ocr/extract', {
-                method: 'POST',
-                body: formData
-            });
-
+            const response = await fetch('/api/ocr/extract', { method: 'POST', body });
             const data = await response.json();
-
-            if (response.ok && data.success) {
-                renderResult(data);
-                saveToHistory(data);
-            } else {
-                handleError(data.errorMessage || '텍스트 추출 중 오류가 발생했습니다.');
+            if (!response.ok || !data.success) {
+                throw new Error(data.errorMessage || '텍스트를 추출하지 못했습니다.');
             }
+            showResult(data);
+            saveHistory(data);
         } catch (error) {
-            handleError('서버 통신 실패: ' + error.message);
+            showNotice(error.message || 'OCR 서버와 통신하지 못했습니다.', true);
         } finally {
             setLoading(false);
         }
     });
 
-    function renderResult(data) {
-        metricTime.textContent = `${data.processingTimeMs} ms`;
-        metricWords.textContent = data.wordCount;
-        metricLines.textContent = data.lineCount;
-
-        emptyState.classList.add('hidden');
-        resultTextarea.classList.remove('hidden');
-        resultTextarea.value = data.text;
-
-        ttsBtn.disabled = !data.text;
-        shareBoardBtn.disabled = !data.text;
-        copyBtn.disabled = !data.text;
-        downloadBtn.disabled = !data.text;
-
-        showInfoNotice(`인식 완료! (소요 시간: ${data.processingTimeMs}ms)`);
+    function showResult(data) {
+        elements.emptyState.classList.add('hidden');
+        elements.result.classList.remove('hidden');
+        elements.result.value = data.text || '';
+        elements.resultFileName.textContent = data.fileName || currentFile?.name || 'OCR 결과';
+        updateMetrics(data);
+        setResultActions(Boolean(data.text));
+        showNotice(data.text
+            ? `텍스트 추출을 완료했습니다. 결과를 직접 교정할 수 있습니다.`
+            : '이미지에서 인식된 텍스트가 없습니다.');
     }
 
-    function handleError(msg) {
-        alert(msg);
-        showInfoNotice(`오류: ${msg}`);
+    function updateMetrics(data = {}) {
+        elements.metricTime.textContent = data.processingTimeMs != null ? `${data.processingTimeMs} ms` : '-';
+        elements.metricWords.textContent = data.wordCount ?? '-';
+        elements.metricLines.textContent = data.lineCount ?? '-';
+        elements.metricSize.textContent = data.fileSize != null
+            ? formatBytes(data.fileSize)
+            : currentFile ? formatBytes(currentFile.size) : '-';
     }
 
-    function setLoading(isLoading) {
-        extractBtn.disabled = isLoading;
-        if (isLoading) {
-            btnSpinner.classList.remove('hidden');
-            btnText.textContent = '인식 분석 중...';
-        } else {
-            btnSpinner.classList.add('hidden');
-            btnText.textContent = '텍스트 추출 시작';
-        }
+    function setLoading(loading) {
+        elements.extract.disabled = loading || !currentFile;
+        elements.spinner.classList.toggle('hidden', !loading);
+        elements.buttonText.textContent = loading ? '텍스트 인식 중...' : '텍스트 추출';
     }
 
-    // TTS (Text-to-Speech)
-    ttsBtn.addEventListener('click', () => {
-        const text = resultTextarea.value;
+    function setResultActions(enabled) {
+        elements.tts.disabled = !enabled;
+        elements.copy.disabled = !enabled;
+        elements.download.disabled = !enabled;
+    }
+
+    elements.result.addEventListener('input', () => setResultActions(Boolean(elements.result.value.trim())));
+
+    elements.tts.addEventListener('click', () => {
+        const text = elements.result.value.trim();
         if (!text) return;
+        if (!('speechSynthesis' in window)) {
+            showNotice('이 브라우저는 음성 읽기를 지원하지 않습니다.', true);
+            return;
+        }
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = selectedLanguage.includes('kor') ? 'ko-KR' : 'en-US';
+        utterance.addEventListener('start', () => { elements.tts.textContent = '읽는 중...'; });
+        utterance.addEventListener('end', () => { elements.tts.textContent = '음성 듣기'; });
+        utterance.addEventListener('error', () => { elements.tts.textContent = '음성 듣기'; });
+        window.speechSynthesis.speak(utterance);
+    });
 
-        if ('speechSynthesis' in window) {
-            window.speechSynthesis.cancel(); // Stop any previous playback
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = selectedLanguage.includes('kor') ? 'ko-KR' : 'en-US';
-            utterance.rate = 1.0;
-            window.speechSynthesis.speak(utterance);
-            
-            ttsBtn.innerText = '🔊 재생 중...';
-            utterance.onend = () => { ttsBtn.innerText = '🔊 음성 듣기'; };
-        } else {
-            alert('이 브라우저는 음성 합성(TTS)을 지원하지 않습니다.');
+    elements.copy.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(elements.result.value);
+            elements.copy.textContent = '복사 완료';
+            setTimeout(() => { elements.copy.textContent = '복사'; }, 1500);
+        } catch {
+            showNotice('클립보드에 복사하지 못했습니다.', true);
         }
     });
 
-    // Share to Board
-    shareBoardBtn.addEventListener('click', () => {
-        const text = resultTextarea.value;
-        if (!text) return;
-
-        switchView('boardView');
-        openPostModal(text);
-    });
-
-    // Copy to Clipboard
-    copyBtn.addEventListener('click', () => {
-        if (!resultTextarea.value) return;
-        navigator.clipboard.writeText(resultTextarea.value).then(() => {
-            copyBtn.innerText = '📋 복사됨!';
-            setTimeout(() => { copyBtn.innerText = '📋 복사'; }, 2000);
-        });
-    });
-
-    // Download Text
-    downloadBtn.addEventListener('click', () => {
-        if (!resultTextarea.value) return;
-        const blob = new Blob([resultTextarea.value], { type: 'text/plain;charset=utf-8' });
+    elements.download.addEventListener('click', () => {
+        const blob = new Blob([elements.result.value], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ocr-result-${Date.now()}.txt`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const link = document.createElement('a');
+        const baseName = (currentFile?.name || 'ocr-result').replace(/\.[^.]+$/, '');
+        link.href = url;
+        link.download = `${baseName}.txt`;
+        link.click();
         URL.revokeObjectURL(url);
     });
 
-    function showInfoNotice(msg) {
-        infoBox.classList.remove('hidden');
-        infoContent.textContent = msg;
+    function saveHistory(data) {
+        const history = readHistory();
+        history.unshift({
+            id: Date.now(),
+            fileName: data.fileName || currentFile?.name || '이미지',
+            text: data.text || '',
+            createdAt: new Date().toISOString(),
+            processingTimeMs: data.processingTimeMs,
+            wordCount: data.wordCount,
+            lineCount: data.lineCount,
+            fileSize: data.fileSize,
+            language: selectedLanguage
+        });
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, HISTORY_LIMIT)));
+        renderHistory(elements.historySearch.value);
     }
 
-    function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    }
-
-    // --- ANONYMOUS BULLETIN BOARD ---
-    const boardFeed = document.getElementById('boardFeed');
-    const postModal = document.getElementById('postModal');
-    const openPostModalBtn = document.getElementById('openPostModalBtn');
-    const closePostModalBtn = document.getElementById('closePostModalBtn');
-    const cancelPostBtn = document.getElementById('cancelPostBtn');
-    const postForm = document.getElementById('postForm');
-    const postOcrAttached = document.getElementById('postOcrAttached');
-
-    openPostModalBtn.addEventListener('click', () => openPostModal());
-    closePostModalBtn.addEventListener('click', closePostModal);
-    cancelPostBtn.addEventListener('click', closePostModal);
-
-    function openPostModal(attachedText = '') {
-        postModal.classList.remove('hidden');
-        if (attachedText) {
-            postOcrAttached.value = attachedText;
-            document.getElementById('postTitle').value = `[OCR 공유] 이미지 추출 텍스트`;
-        } else {
-            postOcrAttached.value = '';
-        }
-    }
-
-    function closePostModal() {
-        postModal.classList.add('hidden');
-        postForm.reset();
-        document.getElementById('postAuthor').value = '익명';
-    }
-
-    async function fetchPosts() {
+    function readHistory() {
         try {
-            const res = await fetch('/api/posts');
-            const posts = await res.json();
-            renderPosts(posts);
-        } catch (e) {
-            boardFeed.innerHTML = `<div class="empty-state">게시글을 불러올 수 없습니다.</div>`;
+            const value = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+            return Array.isArray(value) ? value : [];
+        } catch {
+            return [];
         }
     }
 
-    function renderPosts(posts) {
-        if (!posts || posts.length === 0) {
-            boardFeed.innerHTML = `<div class="empty-state">등록된 익명 게시글이 없습니다. 첫 번째 글을 작성해보세요!</div>`;
+    function renderHistory(query = '') {
+        const keyword = query.trim().toLowerCase();
+        const history = readHistory().filter(item =>
+            !keyword
+            || String(item.fileName || '').toLowerCase().includes(keyword)
+            || String(item.text || '').toLowerCase().includes(keyword)
+        );
+
+        elements.clearHistory.disabled = readHistory().length === 0;
+        if (history.length === 0) {
+            elements.historyGrid.innerHTML = `
+                <div class="empty-history">
+                    <p>${keyword ? '검색 결과가 없습니다.' : '아직 저장된 OCR 작업이 없습니다.'}</p>
+                    <span>${keyword ? '다른 검색어를 입력해보세요.' : '이미지를 변환하면 이곳에서 다시 불러올 수 있습니다.'}</span>
+                </div>`;
             return;
         }
 
-        boardFeed.innerHTML = posts.map(post => `
-            <div class="post-card" data-id="${post.id}">
-                <div class="post-meta">
-                    <span class="post-author">👤 ${escapeHtml(post.author)}</span>
-                    <span class="post-date">${post.createdAt}</span>
+        elements.historyGrid.innerHTML = history.map(item => `
+            <article class="history-card">
+                <div class="history-meta">
+                    <strong>${escapeHtml(item.fileName || '이미지')}</strong>
+                    <time>${formatDate(item.createdAt, item.time)}</time>
                 </div>
-                <h3 class="post-title">${escapeHtml(post.title)}</h3>
-                <div class="post-content">${escapeHtml(post.content)}</div>
-                ${post.attachedOcrText ? `<div class="post-attached-ocr">📷 <b>OCR 첨부:</b> ${escapeHtml(post.attachedOcrText)}</div>` : ''}
-                <div class="post-footer">
-                    <button type="button" class="like-btn" onclick="likePost(${post.id})">
-                        ❤️ 좋아요 ${post.likeCount}
-                    </button>
-                    <button type="button" class="delete-btn" onclick="deletePost(${post.id})">
-                        🗑️ 삭제
-                    </button>
+                <p>${escapeHtml(item.text || '인식된 텍스트 없음')}</p>
+                <div class="history-footer">
+                    <span>${item.processingTimeMs ?? '-'}ms · ${item.wordCount ?? countWords(item.text)}단어</span>
+                    <div>
+                        <button type="button" class="text-btn" data-action="load" data-id="${item.id}">불러오기</button>
+                        <button type="button" class="text-btn danger" data-action="delete" data-id="${item.id}">삭제</button>
+                    </div>
                 </div>
-            </div>
+            </article>
         `).join('');
     }
 
-    postForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const author = document.getElementById('postAuthor').value;
-        const title = document.getElementById('postTitle').value;
-        const content = document.getElementById('postContent').value;
-        const attachedOcrText = postOcrAttached.value;
+    elements.historySearch.addEventListener('input', event => renderHistory(event.target.value));
 
-        try {
-            const res = await fetch('/api/posts', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ author, title, content, attachedOcrText })
-            });
-
-            if (res.ok) {
-                const created = await res.json();
-                const deleteTokens = JSON.parse(localStorage.getItem('post_delete_tokens') || '{}');
-                deleteTokens[created.post.id] = created.deleteToken;
-                localStorage.setItem('post_delete_tokens', JSON.stringify(deleteTokens));
-                closePostModal();
-                fetchPosts();
-            } else {
-                alert('글 등록에 실패했습니다.');
-            }
-        } catch (e) {
-            alert('서버 오류 발생');
+    elements.historyGrid.addEventListener('click', event => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const id = Number(button.dataset.id);
+        if (button.dataset.action === 'delete') {
+            deleteHistory(id);
+        } else {
+            loadHistory(id);
         }
     });
 
-    window.likePost = async function(id) {
-        try {
-            const res = await fetch(`/api/posts/${id}/like`, { method: 'POST' });
-            if (res.ok) fetchPosts();
-        } catch (e) {}
-    };
+    elements.clearHistory.addEventListener('click', () => {
+        if (!readHistory().length || !window.confirm('최근 OCR 작업을 모두 삭제할까요?')) return;
+        localStorage.removeItem(HISTORY_KEY);
+        renderHistory(elements.historySearch.value);
+    });
 
-    window.deletePost = async function(id) {
-        if (!confirm('이 게시글을 삭제하시겠습니까?')) return;
-        const deleteTokens = JSON.parse(localStorage.getItem('post_delete_tokens') || '{}');
-        const deleteToken = deleteTokens[id];
-        if (!deleteToken) {
-            alert('이 브라우저에는 해당 게시글의 삭제 권한이 없습니다.');
-            return;
-        }
-        try {
-            const res = await fetch(`/api/posts/${id}`, {
-                method: 'DELETE',
-                headers: { 'X-Delete-Token': deleteToken }
-            });
-            if (res.ok) {
-                delete deleteTokens[id];
-                localStorage.setItem('post_delete_tokens', JSON.stringify(deleteTokens));
-                fetchPosts();
-            } else if (res.status === 403) {
-                alert('삭제 토큰이 올바르지 않습니다.');
-            }
-        } catch (e) {}
-    };
+    function deleteHistory(id) {
+        const history = readHistory().filter(item => Number(item.id) !== id);
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+        renderHistory(elements.historySearch.value);
+    }
 
-    // --- WEB SPEECH API (STT Voice Recognition) & SEARCH ---
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    function loadHistory(id) {
+        const item = readHistory().find(historyItem => Number(historyItem.id) === id);
+        if (!item) return;
+        elements.emptyState.classList.add('hidden');
+        elements.result.classList.remove('hidden');
+        elements.result.value = item.text || '';
+        elements.resultFileName.textContent = item.fileName || '저장된 OCR 결과';
+        selectedLanguage = item.language || selectedLanguage;
+        elements.langChips.forEach(chip => chip.classList.toggle('active', chip.dataset.lang === selectedLanguage));
+        updateMetrics(item);
+        setResultActions(Boolean(item.text));
+        showNotice('저장된 OCR 결과를 불러왔습니다. 편집 후 복사하거나 저장할 수 있습니다.');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 
-    setupVoiceSearch('homeMicBtn', 'homeSearchInput', 'homeVoiceStatus');
-    setupVoiceSearch('searchMicBtn', 'mainSearchInput', 'searchVoiceStatus');
+    function showNotice(message, error = false) {
+        elements.infoContent.textContent = message;
+        elements.infoBox.classList.remove('hidden');
+        elements.infoBox.classList.toggle('error', error);
+    }
 
-    function setupVoiceSearch(micBtnId, inputId, statusId) {
-        const micBtn = document.getElementById(micBtnId);
-        const input = document.getElementById(inputId);
-        const status = document.getElementById(statusId);
+    function hideNotice() {
+        elements.infoBox.classList.add('hidden');
+        elements.infoBox.classList.remove('error');
+    }
 
-        if (!micBtn || !input) return;
+    function formatBytes(bytes) {
+        if (!Number.isFinite(Number(bytes)) || Number(bytes) <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        return `${(bytes / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+    }
 
-        if (!SpeechRecognition) {
-            micBtn.title = '이 브라우저는 음성 인식을 지원하지 않습니다 (Chrome/Safari 권장)';
-            return;
-        }
-
-        let recognition = new SpeechRecognition();
-        recognition.lang = 'ko-KR'; // Korean recognition default
-        recognition.interimResults = false;
-
-        let isListening = false;
-
-        micBtn.addEventListener('click', () => {
-            if (isListening) {
-                recognition.stop();
-            } else {
-                try {
-                    recognition.start();
-                } catch (e) {}
-            }
+    function formatDate(isoDate, legacyTime) {
+        const date = new Date(isoDate);
+        return Number.isNaN(date.getTime()) ? (legacyTime || '') : date.toLocaleString('ko-KR', {
+            month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
         });
-
-        recognition.onstart = () => {
-            isListening = true;
-            micBtn.classList.add('recording');
-            if (status) status.classList.remove('hidden');
-        };
-
-        recognition.onresult = (event) => {
-            const transcript = event.results[0][0].transcript;
-            input.value = transcript;
-            filterSearch(transcript);
-        };
-
-        recognition.onerror = () => {
-            stopListening();
-        };
-
-        recognition.onend = () => {
-            stopListening();
-        };
-
-        function stopListening() {
-            isListening = false;
-            micBtn.classList.remove('recording');
-            if (status) status.classList.add('hidden');
-        }
-
-        input.addEventListener('input', (e) => filterSearch(e.target.value));
     }
 
-    function filterSearch(query) {
-        renderHistory(query);
+    function countWords(text = '') {
+        const trimmed = text.trim();
+        return trimmed ? trimmed.split(/\s+/).length : 0;
     }
 
-    // --- OCR HISTORY LOCALSTORAGE ---
-    function saveToHistory(data) {
-        let history = JSON.parse(localStorage.getItem('ocr_history') || '[]');
-        history.unshift({
-            id: Date.now(),
-            fileName: data.fileName,
-            text: data.text,
-            time: new Date().toLocaleTimeString(),
-            processingTimeMs: data.processingTimeMs
-        });
-        if (history.length > 20) history.pop();
-        localStorage.setItem('ocr_history', JSON.stringify(history));
-    }
-
-    function renderHistory(filter = '') {
-        const historyGrid = document.getElementById('historyGrid');
-        if (!historyGrid) return;
-
-        let history = JSON.parse(localStorage.getItem('ocr_history') || '[]');
-        
-        if (filter.trim()) {
-            const lower = filter.toLowerCase();
-            history = history.filter(item => 
-                item.fileName.toLowerCase().includes(lower) || 
-                item.text.toLowerCase().includes(lower)
-            );
-        }
-
-        if (history.length === 0) {
-            historyGrid.innerHTML = `<div class="empty-state">저장된 OCR 인식 결과가 없습니다.</div>`;
-            return;
-        }
-
-        historyGrid.innerHTML = history.map(item => `
-            <div class="history-card">
-                <div class="history-meta">
-                    <span>📄 ${escapeHtml(item.fileName)}</span>
-                    <span>${item.time} (${item.processingTimeMs}ms)</span>
-                </div>
-                <div class="history-text">${escapeHtml(item.text)}</div>
-            </div>
-        `).join('');
-    }
-
-    function escapeHtml(text) {
-        if (!text) return '';
-        return text
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 });
